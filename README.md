@@ -19,7 +19,6 @@ Tore is a command-line tool for managing notifications and reminders. It stores 
 
 ## Commands
 
-### View Notifications
 ```bash
 tore checkout
 ```
