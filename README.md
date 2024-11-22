@@ -42,7 +42,7 @@ View active reminders.
 ```bash
 tore remind <title> <date> [period]
 ```
-`date`: Must be in YYYY-MM-DD format
+`date`: Must be in YYYY-MM-DD format \
 `period` (optional): Specify recurring reminders using format like:
 - `7d` - every 7 days
 - `2w` - every 2 weeks
