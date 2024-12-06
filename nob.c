@@ -92,8 +92,8 @@ char *get_git_hash(Cmd *cmd)
         return_defer(NULL);
     if (!read_entire_file(GIT_HASH_FILE, &sb))
         return_defer(NULL);
-    while (sb.count > 0 && isspace(sb.items[--sb.count]))
-        ;
+    while (sb.count > 0 && isspace(sb.items[sb.count - 1]))
+        sb.count -= 1;
     sb_append_null(&sb);
     return_defer(sb.items);
 defer:
@@ -107,6 +107,112 @@ void usage(const char *program_name)
     printf("Usage: %s [Build Flags] [Command] [Command Flags]\n", program_name);
     printf("Build flags:\n");
     print_flags(build_flags, COUNT_BUILD_FLAGS);
+}
+
+bool compile_template(Cmd *cmd, const char *src_path, const char *dst_path)
+{
+    Fd index_fd = fd_open_for_write(dst_path);
+    if (index_fd == INVALID_FD)
+        return false;
+    ;
+    cmd_append(cmd, BUILD_FOLDER "tt", src_path);
+    if (!cmd_run_sync_redirect_and_reset(cmd, (Nob_Cmd_Redirect){
+                                                  .fdout = &index_fd,
+                                              }))
+        return false;
+    ;
+    return true;
+}
+
+typedef struct
+{
+    const char *file_path;
+    size_t offset;
+    size_t size;
+} Resource;
+
+Resource resources[] = {
+    {.file_path = "./resources/images/tore.png"},
+    {.file_path = "./resources/css/reset.css"},
+    {.file_path = "./resources/css/main.css"},
+};
+
+#define genf(out, ...)                                     \
+    do                                                     \
+    {                                                      \
+        fprintf((out), __VA_ARGS__);                       \
+        fprintf((out), " // %s:%d\n", __FILE__, __LINE__); \
+    } while (0)
+
+bool generate_resource_bundle(void)
+{
+    bool result = true;
+    Nob_String_Builder bundle = {0};
+    Nob_String_Builder content = {0};
+    FILE *out = NULL;
+
+    const char *bundle_h_path = BUILD_FOLDER "bundle.h";
+
+    // bundle  = [aaaaaaaaabbbbb]
+    //            ^        ^
+    // content = []
+    // 0, 9
+
+    for (size_t i = 0; i < NOB_ARRAY_LEN(resources); ++i)
+    {
+        nob_log(NOB_INFO, "Bundling %s into %s", resources[i].file_path, bundle_h_path);
+        content.count = 0;
+        if (!nob_read_entire_file(resources[i].file_path, &content))
+            nob_return_defer(false);
+        resources[i].offset = bundle.count;
+        resources[i].size = content.count;
+        nob_da_append_many(&bundle, content.items, content.count);
+        nob_da_append(&bundle, 0);
+    }
+
+    out = fopen(bundle_h_path, "wb");
+    if (out == NULL)
+    {
+        nob_log(NOB_ERROR, "Could not open file %s for writing: %s", bundle_h_path, strerror(errno));
+        nob_return_defer(false);
+    }
+
+    genf(out, "#ifndef BUNDLE_H_");
+    genf(out, "#define BUNDLE_H_");
+    genf(out, "typedef struct {");
+    genf(out, "    const char *file_path;");
+    genf(out, "    size_t offset;");
+    genf(out, "    size_t size;");
+    genf(out, "} Resource;");
+    genf(out, "size_t resources_count = %zu;", NOB_ARRAY_LEN(resources));
+    genf(out, "Resource resources[] = {");
+    for (size_t i = 0; i < NOB_ARRAY_LEN(resources); ++i)
+    {
+        genf(out, "    {.file_path = \"%s\", .offset = %zu, .size = %zu},",
+             resources[i].file_path, resources[i].offset, resources[i].size);
+    }
+    genf(out, "};");
+
+    genf(out, "unsigned char bundle[] = {");
+    size_t row_size = 20;
+    for (size_t i = 0; i < bundle.count;)
+    {
+        fprintf(out, "     ");
+        for (size_t col = 0; col < row_size && i < bundle.count; ++col, ++i)
+        {
+            fprintf(out, "0x%02X, ", (unsigned char)bundle.items[i]);
+        }
+        genf(out, "");
+    }
+    genf(out, "};");
+    genf(out, "#endif // BUNDLE_H_");
+
+defer:
+    if (out)
+        fclose(out);
+    free(content.items);
+    free(bundle.items);
+    return result;
 }
 
 int main(int argc, char **argv)
@@ -136,14 +242,14 @@ int main(int argc, char **argv)
     builder_inputs(&cmd, SRC_BUILD_FOLDER "tt.c");
     if (!cmd_run_sync_and_reset(&cmd))
         return 1;
-
-    Fd index_fd = fd_open_for_write(BUILD_FOLDER "index_page.h");
-    if (index_fd == INVALID_FD)
+    if (!compile_template(&cmd, SRC_FOLDER "index_page.h.tt", BUILD_FOLDER "index_page.h"))
         return 1;
-    cmd_append(&cmd, BUILD_FOLDER "tt", SRC_FOLDER "index_page.h.tt");
-    if (!cmd_run_sync_redirect_and_reset(&cmd, (Nob_Cmd_Redirect){
-                                                   .fdout = &index_fd,
-                                               }))
+    if (!compile_template(&cmd, SRC_FOLDER "error_page.h.tt", BUILD_FOLDER "error_page.h"))
+        return 1;
+    if (!compile_template(&cmd, SRC_FOLDER "notif_page.h.tt", BUILD_FOLDER "notif_page.h"))
+        return 1;
+
+    if (!generate_resource_bundle())
         return 1;
 
     char *git_hash = get_git_hash(&cmd);
@@ -195,6 +301,19 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(command_name, "svg") == 0)
+    {
+        cmd_append(&cmd, "convert",
+                   "-background", "None", "./assets/images/tore.svg",
+                   "-resize", "32x32", "./assets/images/tore.png");
+        if (!cmd_run_sync_and_reset(&cmd))
+            return 1;
+        return 0;
+    }
+
     nob_log(ERROR, "Unknown command %s", command_name);
     return 1;
 }
+// TODO: automatic record/replay testing
+// TODO: merge src_build/tt.c into nob.c
+//   It does not need to be a separate tool. It's all written in the same language.

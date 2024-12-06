@@ -2,6 +2,8 @@
 <html>
   <head>
     <title>Tore</title>
+    <link rel="stylesheet" type="text/css" href="/css/reset.css">
+    <link rel="stylesheet" type="text/css" href="/css/main.css">
   </head>
   <body>
     <h1>Tore</h1>
@@ -11,11 +13,13 @@
         %for (size_t i = 0; i < notifs.count; ++i) {%
             %Grouped_Notification *it = &notifs.items[i];%
             %assert(it->group_count > 0);%
+            <li>
             %if (it->group_count == 1) {%
-                <li>%ESCAPED_OUT(it->title, strlen(it->title));%</li>
+                <a href="/notif/%INT(it->notif_id);%">%ESCAPED_OUT(it->title, strlen(it->title));%</a>
             %} else {%
-                <li>[%INT(it->group_count);%] %ESCAPED_OUT(it->title, strlen(it->title));%</li>
+                [%INT(it->group_count);%] %ESCAPED_OUT(it->title, strlen(it->title));%
             %}%
+            </li>
         %}%
     %} else {%
         <p>No notifications</p>

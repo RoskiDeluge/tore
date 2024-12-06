@@ -430,15 +430,20 @@ bool nob_set_current_dir(const char *path);
 #ifndef NOB_REBUILD_URSELF
 #  if _WIN32
 #    if defined(__GNUC__)
-#       define NOB_REBUILD_URSELF(binary_path, source_path) "gcc", "-o", binary_path, source_path
+#       define NOB_REBUILD_URSELF(binary_path, source_path) "gcc", "-DNOB_SELF_REBUILT", "-o", binary_path, source_path
 #    elif defined(__clang__)
-#       define NOB_REBUILD_URSELF(binary_path, source_path) "clang", "-o", binary_path, source_path
+#       define NOB_REBUILD_URSELF(binary_path, source_path) "clang", "-DNOB_SELF_REBUILT", "-o", binary_path, source_path
 #    elif defined(_MSC_VER)
-#       define NOB_REBUILD_URSELF(binary_path, source_path) "cl.exe", nob_temp_sprintf("/Fe:%s", (binary_path)), source_path
+#       define NOB_REBUILD_URSELF(binary_path, source_path) "cl.exe", "/DNOB_SELF_REBUILT", nob_temp_sprintf("/Fe:%s", (binary_path)), source_path
 #    endif
 #  else
-#    define NOB_REBUILD_URSELF(binary_path, source_path) "cc", "-o", binary_path, source_path
+#    define NOB_REBUILD_URSELF(binary_path, source_path) "cc", "-DNOB_SELF_REBUILT", "-o", binary_path, source_path
 #  endif
+// TODO: After the introduction of -DNOB_SELF_REBUILT all the custom NOB_REBUILD_URSELF definitions are broken,
+// because they likely don't have it. And if you don't have -DNOB_SELF_REBUILT you end up in an infinite rebuild loop.
+// We should probably put -DNOB_SELF_REBUILT into a separate macro (also redefinable for those who know what they are doing).
+// Luckly just "-DNOB_SELF_REBUILT" should work for the majority of the compilers (including MSVC btw, because it allows to
+// use both dashes and slashes for its flags).
 #endif
 
 // Go Rebuild Urself™ Technology
@@ -495,6 +500,7 @@ Nob_String_View nob_sv_trim_left(Nob_String_View sv);
 Nob_String_View nob_sv_trim_right(Nob_String_View sv);
 bool nob_sv_eq(Nob_String_View a, Nob_String_View b);
 bool nob_sv_end_with(Nob_String_View sv, const char *cstr);
+bool nob_sv_starts_with(Nob_String_View sv, Nob_String_View expected_prefix);
 Nob_String_View nob_sv_from_cstr(const char *cstr);
 Nob_String_View nob_sv_from_parts(const char *data, size_t count);
 // nob_sb_to_sv() enables you to just view Nob_String_Builder as Nob_String_View
@@ -634,8 +640,13 @@ void nob__go_rebuild_urself(int argc, char **argv, const char *source_path, ...)
     }
 #endif
 
+    // TODO: write an article about how to use the flags files.
+    const char *nob_flags_file_path = nob_temp_sprintf("%s.flags.txt", binary_path);
+    int nob_flags_exists = nob_file_exists(nob_flags_file_path);
+
     Nob_File_Paths source_paths = {0};
     nob_da_append(&source_paths, source_path);
+    if (nob_flags_exists > 0) nob_da_append(&source_paths, nob_flags_file_path);
     va_list args;
     va_start(args, source_path);
     for (;;) {
@@ -647,6 +658,12 @@ void nob__go_rebuild_urself(int argc, char **argv, const char *source_path, ...)
 
     int rebuild_is_needed = nob_needs_rebuild(binary_path, source_paths.items, source_paths.count);
     if (rebuild_is_needed < 0) exit(1); // error
+#ifndef NOB_SELF_REBUILT
+    // If NOB_SELF_REBUILT is not defined we are running nob that was bootstrapped manually
+    // for the first time. Which means it probably does not have flags defined in nob.flags.txt
+    // files. Forsing rebuild just in case to pick up those flags.
+    rebuild_is_needed = 1;
+#endif //
     if (!rebuild_is_needed) {           // no rebuild is needed
         free(source_paths.items);
         return;
@@ -658,6 +675,19 @@ void nob__go_rebuild_urself(int argc, char **argv, const char *source_path, ...)
 
     if (!nob_rename(binary_path, old_binary_path)) exit(1);
     nob_cmd_append(&cmd, NOB_REBUILD_URSELF(binary_path, source_path));
+    if (nob_flags_exists > 0) {
+        Nob_String_Builder sb = {0};
+        if (nob_read_entire_file(nob_flags_file_path, &sb)) {
+            Nob_String_View sv = nob_sb_to_sv(sb);
+            while (sv.count > 0) {
+                Nob_String_View flag = nob_sv_trim(nob_sv_chop_by_delim(&sv, '\n'));
+                if (flag.count == 0) continue;         // NOTE: ignore empty lines
+                if (*flag.data == '#') continue;       // NOTE: ignore commented out lines
+                ((char*)flag.data)[flag.count] = '\0'; // TODO: explain why this is fine
+                nob_cmd_append(&cmd, flag.data);
+            }
+        }
+    }
     if (!nob_cmd_run_sync_and_reset(&cmd)) {
         nob_rename(old_binary_path, binary_path);
         exit(1);
@@ -1560,6 +1590,17 @@ bool nob_sv_end_with(Nob_String_View sv, const char *cstr)
     return false;
 }
 
+
+bool nob_sv_starts_with(Nob_String_View sv, Nob_String_View expected_prefix)
+{
+    if (expected_prefix.count <= sv.count) {
+        Nob_String_View actual_prefix = nob_sv_from_parts(sv.data, expected_prefix.count);
+        return nob_sv_eq(expected_prefix, actual_prefix);
+    }
+
+    return false;
+}
+
 // RETURNS:
 //  0 - file does not exists
 //  1 - file exists
@@ -1805,6 +1846,7 @@ int closedir(DIR *dirp)
         #define sv_trim_left nob_sv_trim_left
         #define sv_trim_right nob_sv_trim_right
         #define sv_eq nob_sv_eq
+        #define sv_starts_with nob_sv_starts_with
         #define sv_end_with nob_sv_end_with
         #define sv_from_cstr nob_sv_from_cstr
         #define sv_from_parts nob_sv_from_parts
@@ -1819,6 +1861,8 @@ int closedir(DIR *dirp)
       1.10.0-dev         Add NOB_GO_REBUILD_URSELF_PLUS()
                          Add nob_delete_file()
                          Add experimental NOB_GRU_DELETE_OLD_BINARY feature flag
+                         Add nob.flags.txt file awareness
+                         Add nob_sv_start_with()
       1.9.0 (2024-11-06) Add Nob_Cmd_Redirect mechanism (By @rexim)
                          Add nob_path_name() (By @0dminnimda)
       1.8.0 (2024-11-03) Add nob_cmd_extend() (By @0dminnimda)
