@@ -2,6 +2,8 @@
 #define NOB_STRIP_PREFIX
 #define NOB_GRU_DELETE_OLD_BINARY
 #include "nob.h"
+// Added this include to fix the kill() build error - RD
+#include <signal.h>
 
 #include "./src_build/flags.c"
 typedef enum
@@ -251,8 +253,9 @@ bool build_tore(Cmd *cmd)
     char *git_hash = get_git_hash(cmd);
     builder_compiler(cmd);
     builder_common_flags(cmd);
-    if (!build_flags[BF_ASAN].value)
-        cmd_append(cmd, "-static");
+    // Do not uncomment this line during upstream merge, it will break the build. - RD
+    // if (!build_flags[BF_ASAN].value)
+    //     cmd_append(cmd, "-static");
     if (git_hash)
     {
         cmd_append(cmd, temp_sprintf("-DGIT_HASH=\"%s\"", git_hash));
