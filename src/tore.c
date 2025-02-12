@@ -847,34 +847,64 @@ void sb_append_html_escaped_buf(String_Builder *sb, const char *buf, size_t size
 
 void render_index_page(String_Builder *sb, Grouped_Notifications notifs, Reminders reminders)
 {
-#define OUT(buf, size) sb_append_buf(sb, buf, size)
-#define ESCAPED_OUT(buf, size) sb_append_html_escaped_buf(sb, buf, size)
-#define INT(x) sb_append_cstr(sb, temp_sprintf("%d", (x)))
-#include "index_page.h"
+#define OUT(buf, size) sb_append_buf(sb, buf, size);
+#define ESCAPED(cstr) sb_append_html_escaped_buf(sb, cstr, strlen(cstr));
+#define INT(x) sb_append_cstr(sb, temp_sprintf("%d", (x)));
+#define PAGE_BODY "index_page.h"
+#define PAGE_TITLE
+#include "root_page.h"
+#undef PAGE_TITLE
+#undef PAGE_BODY
 #undef INT
+#undef ESCAPED
 #undef OUT
-#undef ESCAPED_OUT
 }
 
 void render_error_page(String_Builder *sb, int error_code, const char *error_name)
 {
-#define OUT(buf, size) sb_append_buf(sb, buf, size)
+#define OUT(buf, size) sb_append_buf(sb, buf, size);
 #define ERROR_CODE sb_append_cstr(sb, temp_sprintf("%d", error_code));
 #define ERROR_NAME sb_append_cstr(sb, error_name);
-#include "error_page.h"
+#define PAGE_BODY "error_page.h"
+#define PAGE_TITLE sb_append_cstr(sb, temp_sprintf(" - %d - %s", error_code, error_name));
+#include "root_page.h"
+#undef PAGE_TITLE
+#undef PAGE_BODY
 #undef ERROR_CODE
 #undef ERROR_NAME
+#undef OUT
 }
 
 void render_notif_page(String_Builder *sb, Notification notif)
 {
-#define OUT(buf, size) sb_append_buf(sb, buf, size)
-#define ESCAPED_OUT(buf, size) sb_append_html_escaped_buf(sb, buf, size)
-#define INT(x) sb_append_cstr(sb, temp_sprintf("%d", (x)))
-#include "notif_page.h"
+#define OUT(buf, size) sb_append_buf(sb, buf, size);
+#define ESCAPED(cstr) sb_append_html_escaped_buf(sb, cstr, strlen(cstr));
+#define INT(x) sb_append_cstr(sb, temp_sprintf("%d", (x)));
+#define PAGE_BODY "notif_page.h"
+#define PAGE_TITLE                            \
+    sb_append_cstr(sb, " - Notification - "); \
+    INT(notif.id);
+#include "root_page.h"
+#undef PAGE_TITLE
+#undef PAGE_BODY
 #undef INT
 #undef OUT
-#undef ESCAPED_OUT
+#undef ESCAPED
+}
+
+void render_version_page(String_Builder *sb)
+{
+#define OUT(buf, size) sb_append_buf(sb, buf, size);
+#define ESCAPED(cstr) sb_append_html_escaped_buf(sb, cstr, strlen(cstr));
+#define PAGE_BODY "version_page.h"
+#define PAGE_TITLE             \
+    sb_append_cstr(sb, " - "); \
+    sb_append_cstr(sb, GIT_HASH);
+#include "root_page.h"
+#undef PAGE_TITLE
+#undef PAGE_BODY
+#undef ESCAPED
+#undef OUT
 }
 
 sqlite3 *open_tore_db(void)
@@ -1172,7 +1202,7 @@ void serve_error(Serve_Context *sc, int status_code)
     UNUSED(write_entire_sv(sc->client_fd, sb_to_sv(sc->response)));
 }
 
-bool serve_index(Serve_Context *sc)
+void serve_index(Serve_Context *sc)
 {
     bool result = true;
     sqlite3 *db = open_tore_db();
@@ -1204,7 +1234,6 @@ defer:
             result = txn_commit(db);
         sqlite3_close(db);
     }
-    return result;
 }
 
 bool serve_notif(Serve_Context *sc, int notif_id)
@@ -1244,16 +1273,23 @@ defer:
     return result;
 }
 
+void serve_version(Serve_Context *sc)
+{
+    render_version_page(&sc->body);
+    http_render_response(&sc->response, 200, "text/html", sb_to_sv(sc->body));
+    UNUSED(write_entire_sv(sc->client_fd, sb_to_sv(sc->response)));
+}
+
 void serve_resource(Serve_Context *sc, const char *resource_path, const char *content_type)
 {
-    Resource *favicon = find_resource(resource_path);
-    if (!favicon)
+    Resource *resource = find_resource(resource_path);
+    if (!resource)
     {
         serve_error(sc, 404);
         return;
     }
 
-    sb_append_buf(&sc->body, &bundle[favicon->offset], favicon->size);
+    sb_append_buf(&sc->body, &bundle[resource->offset], resource->size);
     http_render_response(&sc->response, 200, content_type, sb_to_sv(sc->body));
     UNUSED(write_entire_sv(sc->client_fd, sb_to_sv(sc->response)));
 }
@@ -1261,7 +1297,7 @@ void serve_resource(Serve_Context *sc, const char *resource_path, const char *co
 void serve_request(Serve_Context *sc)
 {
     // TODO: should `serve` fire off reminders?
-    // TODO: log queries
+    // TODO: log HTTP queries
 
     // <Status-Line>\r\n<Header>\r\n<Header>\r\n<Header>\r\n<Header>\r\n<Header>\r\n\r\n
     char buffer[1024];
@@ -1299,25 +1335,35 @@ void serve_request(Serve_Context *sc)
 
     if (sv_eq(uri, sv_from_cstr("/")))
     {
-        UNUSED(serve_index(sc));
+        serve_index(sc);
+        return;
     }
-    else if (sv_eq(uri, sv_from_cstr("/favicon.ico")))
+    if (sv_eq(uri, sv_from_cstr("/version")))
+    {
+        serve_version(sc);
+        return;
+    }
+    if (sv_eq(uri, sv_from_cstr("/favicon.ico")))
     {
         serve_resource(sc, "./resources/images/tore.png", "image/png");
+        return;
     }
-    else if (sv_eq(uri, sv_from_cstr("/css/reset.css")))
+    if (sv_eq(uri, sv_from_cstr("/css/reset.css")))
     {
         serve_resource(sc, "./resources/css/reset.css", "text/css");
+        return;
     }
-    else if (sv_eq(uri, sv_from_cstr("/css/main.css")))
+    if (sv_eq(uri, sv_from_cstr("/css/main.css")))
     {
         serve_resource(sc, "./resources/css/main.css", "text/css");
+        return;
     }
-    else if (sv_eq(uri, sv_from_cstr("/urmom")))
+    if (sv_eq(uri, sv_from_cstr("/urmom")))
     {
         serve_error(sc, 413);
+        return;
     }
-    else if (sv_starts_with(uri, sv_from_cstr("/notif/")))
+    if (sv_starts_with(uri, sv_from_cstr("/notif/")))
     {
         String_View notif_uri_prefix = sv_from_cstr("/notif/");
         uri.count -= notif_uri_prefix.count;
@@ -1340,11 +1386,10 @@ void serve_request(Serve_Context *sc)
             return;
         }
         UNUSED(serve_notif(sc, notif_id));
+        return;
     }
-    else
-    {
-        serve_error(sc, 404);
-    }
+
+    serve_error(sc, 404);
 }
 
 bool serve_run(Command *self, const char *program_name, int argc, char **argv)
@@ -1621,6 +1666,15 @@ defer:
 
 bool help_run(Command *self, const char *program_name, int argc, char **argv);
 
+// TODO: more consistent naming of the commands
+// Right now we have a problem that it's unclear what object the command manipulating: Notification or Reminder.
+// The naming should reflect that somehow. Maybe even introduce nested commands:
+// - tore remind add    ...
+// - tore remind rm     ...
+// - tore notifi add    ...
+// - tore notifi rm     ...
+// - tore notifi remind ... // promotes Notification to Reminder
+// - ...
 static Command commands[] = {
     {
         .name = "checkout",
